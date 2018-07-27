@@ -1,7 +1,8 @@
 import tensorflow as tf
 import numpy as np
-import torch
+import collections
 
+cfg = collections.namedtuple("cfg",["batchsize","num_filters","stage_num","depth","dilations","kernel_size","pad_size","choice"])
 
 
 def Conv2d(input,num_filters,ksize=[3,3],strides=[1,1],dilations=[1,1],pad="VALID",name="conv"):
@@ -12,6 +13,19 @@ def Conv2d(input,num_filters,ksize=[3,3],strides=[1,1],dilations=[1,1],pad="VALI
         conv   = tf.nn.conv2d(input,weight,[1]+strides+[1],padding=pad,dilations=[1]+dilations+[1])
         conv   = tf.nn.bias_add(conv,bias)
     return conv
+
+def Conv2d_pad(input,num_filters,ksize=[3,3],strides=[1,1],dilations=[1,1],pad_size=0,pad="VALID",name="conv_pad"):
+    n,h,w,c = input.get_shape().as_list()
+    with tf.variable_scope(name):
+        if pad_size>0:
+            input = tf.pad(input,[[0,0],[pad_size,pad_size],[pad_size,pad_size],[0,0]],name="pad_input")
+        weight = tf.get_variable("weight",ksize+[c,num_filters],dtype=tf.float32,initializer=tf.glorot_uniform_initializer())
+        bias   = tf.get_variable("bias",[num_filters],dtype=tf.float32,initializer=tf.zeros_initializer())
+        conv   = tf.nn.conv2d(input,weight,[1]+strides+[1],padding=pad,dilations=[1]+dilations+[1])
+        conv   = tf.nn.bias_add(conv,bias)
+    return conv
+
+
 
 def Snorm(input,name="switch_norm"):
     n,h,w,c = input.get_shape().as_list()
@@ -66,17 +80,30 @@ def SE(input,num_filters,ratio,name="SE_block"):
         output = input*output
     return output
 
-def RNN(input,num_filters,kernel_size,dilations,h=None,name="RNN"):
+
+def DireConv(input,num_filters,kernel_size,dilations,ratio,pair=None,name="DireConv"):
     with tf.variable_scope(name):
-        pad_x = int(dilations[0]*(kernel_size-1)/2)
+        pad = int(dilations * (kernel_size - 1) / 2)
+        input = tf.pad(input,[[0,0],[pad,pad],[pad,pad],[0,0]],name="input")
+        conv  = Conv2d(input,num_filters,kernel_size,dilations)
+        conv  = SE(conv,num_filters,ratio)
+        conv  = tf.nn.leaky_relu(conv,alpha=0.2)
+    return conv,None
+
+
+
+
+def RNN(input,num_filters,kernel_size,dilations,pair=None,name="RNN"):
+    with tf.variable_scope(name):
+        pad_x    = int(dilations[0]*(kernel_size-1)/2)
         input_x  = tf.pad(input,[[0,0],[pad_x,pad_x],[pad_x,pad_x],[0,0]],name="pad_x")
-        conv_x = Conv2d(input_x,num_filters,kernel_size,dilations=dilations)
+        conv_x   = Conv2d(input_x,num_filters,kernel_size,dilations=dilations)
 
-        pad_h  = int((kernel_size)/2)
+        pad_h   = int((kernel_size)/2)
         input_h = tf.pad(input,[[0,0],[pad_h,pad_h],[pad_h,pad_h],[0,0]],name="pad_h")
-        conv_h = Conv2d(input_h,num_filters,kernel_size,name="conv_h")
+        conv_h  = Conv2d(input_h,num_filters,kernel_size,name="conv_h")
 
-        if h:
+        if pair:
             z = tf.tanh(conv_x+conv_h)
         else:
             h = tf.tanh(conv_x)
@@ -84,7 +111,7 @@ def RNN(input,num_filters,kernel_size,dilations,h=None,name="RNN"):
         h = tf.nn.leaky_relu(h,alpha=0.2)
         return h,h
 
-def GRU(input,num_filters,kernel_size,dilations,ratio,pair=None,name="GRU"):
+def LSTM(input,num_filters,kernel_size,dilations,ratio,pair=None,name="LSTM"):
     with tf.variable_scope(name):
         pad_x = int(dilations*(kernel_size-1)/2)
         input_x = tf.pad(input,[[0,0],[pad_x,pad_x],[pad_x,pad_x],[0,0]],name="input_x")
@@ -118,3 +145,81 @@ def GRU(input,num_filters,kernel_size,dilations,ratio,pair=None,name="GRU"):
         output = SE(h,num_filters,ratio)
         output = tf.nn.leaky_relu(output,alpha=0.2)
     return output,[output,c]
+
+def GRU(input,num_filters,kernel_size,dilations,ratio,pair=None,name="GRU"):
+    with tf.variable_scope(name):
+        pad_x = int(dilations * (kernel_size - 1) / 2)
+        input_x = tf.pad(input, [[0, 0], [pad_x, pad_x], [pad_x, pad_x], [0, 0]], name="input_x")
+        conv_xz = Conv2d(input_x, num_filters, kernel_size, dilations, name="conv_xz")
+        conv_xr = Conv2d(input_x, num_filters, kernel_size, dilations, name="conv_xr")
+        conv_xn = Conv2d(input_x, num_filters, kernel_size, dilations, name="conv_xn")
+
+        pad_h = int((kernel_size - 1) / 2)
+        input_h = tf.pad(input, [[0, 0], [pad_h, pad_h], [pad_h, pad_h], [0, 0]], name="input_y")
+        conv_hz = Conv2d(input_h, num_filters, kernel_size, name="conv_hz")
+        conv_hr = Conv2d(input_h, num_filters, kernel_size, name="conv_hr")
+        conv_hn = Conv2d(input_h, num_filters, kernel_size, name="conv_hn")
+
+        if pair:
+            z = tf.sigmoid(conv_xz+conv_hz)
+            r = tf.sigmoid(conv_xr+conv_hr)
+            n = tf.tanh(conv_xn+conv_hn)
+            h = (1-z)*pair +z*n
+        else:
+            z = tf.sigmoid(conv_xz)
+            f = tf.tanh(conv_xn)
+            h = z*f
+
+        output = SE(h,num_filters,ratio)
+        output = tf.nn.leaky_relu(output,alpha=0.2)
+    return output,output
+
+
+
+
+def Basic_rnn_block(input,num_filters,kernel_size,dilations,depth,state,choice="RNN",name="RNN_block"):
+    """
+    :param state: note state should be list,length equals to nums of rnn_unit
+    :return:
+    """
+    rnn_map = {"GRU":GRU,"RNN":RNN,"LSTM":LSTM,"DireConv":DireConv}
+    cnt = 0
+    tmp_state = []
+    with tf.variable_scope(name):
+        conv_name = choice+"_"+str(cnt)
+        conv,cur_state = rnn_map[choice](input=input,num_filters=num_filters,kernel_size=kernel_size,dilations=dilations,pair=state[cnt],name=conv_name)
+        tmp_state.appned(cur_state)
+        for i in range(depth-3):
+            cnt += 1
+            conv_name = choice+"_"+str(cnt)
+            conv,cur_state = rnn_map[choice](conv,num_filters=num_filters,kernel_size=kernel_size,dilations=dilations,pair=state[cnt],name=conv_name)
+            tmp_state.append(cur_state)
+    return conv,tmp_state,cnt
+
+def Basic_dec_block(input,num_filters,kernel_size,dilations,ratio,name="Dec_block"):
+    with tf.variable_scope(name):
+        conv = Conv2d_pad(input,num_filters=num_filters,kernel_size=kernel_size,dilations=dilations,pad_size=1)
+        conv = SE(conv,num_filters,ratio)
+        conv = tf.nn.leaky_relu(conv,alpha=0.2)
+        conv = Conv2d(conv,num_filters=3,kernel_size=1)
+    return conv
+
+
+def DetailNet(input,num_filters,kernel_size,dilations,ratio,depth,stage_num,frame,choice="RNN",name="DetailNet"):
+    copy_x = input # may be it should be deepcopy?
+    res    = []
+    with tf.variable_scope(name):
+        init_state = [None for _ in range(1+depth-3)]
+        for i in range(stage_num):
+            stage_name = "stage_"+str(i)
+            conv,c_state,_ = Basic_rnn_block(input,num_filters,kernel_size,dilations,depth,init_state,choice,name=stage_name+'RNN_Block')
+            conv           = Basic_dec_block(input,num_filters,kernel_size,ratio=ratio,name=stage_name+"Dec_Block")
+
+            if frame == "add" and i>0:
+                conv = conv + res[-1]
+            res.append(conv)
+            init_state = c_state
+            input      = copy_x - conv
+    return res
+
+
