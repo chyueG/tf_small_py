@@ -7,6 +7,6 @@ ssr net is sensitive to adam optimizer,should carefully choose epslion,can conve
 
 switch norm test is ok 
 
-
-rescan net just finish,without test ,paper Recurrent Squeeze-and-Excitation Context
-Aggregation Net for Single Image Deraining
+Recurrent Squeeze-and-Excitation Context Aggregation Net for Single Image Deraining  
+tensorflow rewrite and check code for third time
+once finish training,result will be put
