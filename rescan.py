@@ -194,7 +194,7 @@ def Basic_rnn_block(input,num_filters,kernel_size,dilations,depth,state,choice="
         for i in range(depth-3):
             cnt += 1
             conv_name = choice+"_"+str(cnt)
-            conv,cur_state = rnn_map[choice](conv,num_filters=num_filters,kernel_size=kernel_size,dilations=dilations,pair=state[cnt],name=conv_name)
+            conv,cur_state = rnn_map[choice](conv,num_filters=num_filters,kernel_size=kernel_size,dilations=tf.pow(2,i)*dilations,pair=state[cnt],name=conv_name)
             tmp_state.append(cur_state)
     return conv,tmp_state,cnt
 
