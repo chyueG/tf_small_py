@@ -1,8 +1,10 @@
 import tensorflow as tf
 import numpy as np
 import collections
-
-cfg = collections.namedtuple("cfg",["batchsize","num_filters","stage_num","depth","dilations","kernel_size","pad_size","choice"])
+"""
+all assumed list value of kernel_size is equal
+"""
+cfg = collections.namedtuple("cfg",["batchsize","num_filters","stage_num","depth","dilations","kernel_size","pad_size","choice","frame"])
 
 
 def Conv2d(input,num_filters,ksize=[3,3],strides=[1,1],dilations=[1,1],pad="VALID",name="conv"):
@@ -95,16 +97,16 @@ def DireConv(input,num_filters,kernel_size,dilations,ratio,pair=None,name="DireC
 
 def RNN(input,num_filters,kernel_size,dilations,pair=None,name="RNN"):
     with tf.variable_scope(name):
-        pad_x    = int(dilations[0]*(kernel_size-1)/2)
+        pad_x    = int(dilations[0]*(kernel_size[0]-1)/2)
         input_x  = tf.pad(input,[[0,0],[pad_x,pad_x],[pad_x,pad_x],[0,0]],name="pad_x")
         conv_x   = Conv2d(input_x,num_filters,kernel_size,dilations=dilations)
 
-        pad_h   = int((kernel_size)/2)
+        pad_h   = int((kernel_size[0])/2)
         input_h = tf.pad(input,[[0,0],[pad_h,pad_h],[pad_h,pad_h],[0,0]],name="pad_h")
         conv_h  = Conv2d(input_h,num_filters,kernel_size,name="conv_h")
 
-        if pair:
-            z = tf.tanh(conv_x+conv_h)
+        if pair is not None:
+            h = tf.tanh(conv_x+conv_h)
         else:
             h = tf.tanh(conv_x)
 
@@ -127,7 +129,7 @@ def LSTM(input,num_filters,kernel_size,dilations,ratio,pair=None,name="LSTM"):
         conv_ho = Conv2d(input_h,num_filters,kernel_size,name="conv_hi")
         conv_hj = Conv2d(input_h,num_filters,kernel_size,name="conv_hi")
 
-        if pair:
+        if pair is not None:
             h,c = pair
             f   = tf.sigmoid(conv_xf+conv_hf)
             i   = tf.sigmoid(conv_xi+conv_hi)
@@ -158,12 +160,12 @@ def GRU(input,num_filters,kernel_size,dilations,ratio,pair=None,name="GRU"):
         input_h = tf.pad(input, [[0, 0], [pad_h, pad_h], [pad_h, pad_h], [0, 0]], name="input_y")
         conv_hz = Conv2d(input_h, num_filters, kernel_size, name="conv_hz")
         conv_hr = Conv2d(input_h, num_filters, kernel_size, name="conv_hr")
-        conv_hn = Conv2d(input_h, num_filters, kernel_size, name="conv_hn")
+        #conv_hn = Conv2d(input_h, num_filters, kernel_size, name="conv_hn")
 
-        if pair:
+        if pair is not None:
             z = tf.sigmoid(conv_xz+conv_hz)
             r = tf.sigmoid(conv_xr+conv_hr)
-            n = tf.tanh(conv_xn+conv_hn)
+            n = tf.tanh(conv_xn+Conv2d_pad(r*pair,num_filters,kernel_size,pad_size=pad_h,name="r*pair"))
             h = (1-z)*pair +z*n
         else:
             z = tf.sigmoid(conv_xz)
@@ -188,7 +190,7 @@ def Basic_rnn_block(input,num_filters,kernel_size,dilations,depth,state,choice="
     with tf.variable_scope(name):
         conv_name = choice+"_"+str(cnt)
         conv,cur_state = rnn_map[choice](input=input,num_filters=num_filters,kernel_size=kernel_size,dilations=dilations,pair=state[cnt],name=conv_name)
-        tmp_state.appned(cur_state)
+        tmp_state.append(cur_state)
         for i in range(depth-3):
             cnt += 1
             conv_name = choice+"_"+str(cnt)
@@ -198,10 +200,10 @@ def Basic_rnn_block(input,num_filters,kernel_size,dilations,depth,state,choice="
 
 def Basic_dec_block(input,num_filters,kernel_size,dilations,ratio,name="Dec_block"):
     with tf.variable_scope(name):
-        conv = Conv2d_pad(input,num_filters=num_filters,kernel_size=kernel_size,dilations=dilations,pad_size=1)
+        conv = Conv2d_pad(input,num_filters=num_filters,ksize=kernel_size,dilations=dilations,pad_size=1)
         conv = SE(conv,num_filters,ratio)
         conv = tf.nn.leaky_relu(conv,alpha=0.2)
-        conv = Conv2d(conv,num_filters=3,kernel_size=1)
+        conv = Conv2d(conv,num_filters=3,ksize=[1,1])
     return conv
 
 
@@ -213,7 +215,7 @@ def DetailNet(input,num_filters,kernel_size,dilations,ratio,depth,stage_num,fram
         for i in range(stage_num):
             stage_name = "stage_"+str(i)
             conv,c_state,_ = Basic_rnn_block(input,num_filters,kernel_size,dilations,depth,init_state,choice,name=stage_name+'RNN_Block')
-            conv           = Basic_dec_block(input,num_filters,kernel_size,ratio=ratio,name=stage_name+"Dec_Block")
+            conv           = Basic_dec_block(input,num_filters,kernel_size,dilations,ratio=ratio,name=stage_name+"Dec_Block")
 
             if frame == "add" and i>0:
                 conv = conv + res[-1]
@@ -222,4 +224,15 @@ def DetailNet(input,num_filters,kernel_size,dilations,ratio,depth,stage_num,fram
             input      = copy_x - conv
     return res
 
-
+if __name__ == "__main__":
+    cfg.batchsize = 1
+    cfg.num_filters = 32
+    cfg.kernel_size = [3,3]
+    cfg.dilations   = [1,1]
+    cfg.stage_num   = 2
+    cfg.choice      = "RNN"
+    cfg.depth       = 6
+    cfg.ratio       = 6
+    cfg.frame       = "add"
+    input           = tf.placeholder(tf.float32,[cfg.batchsize,224,224,3],name="input")
+    res = DetailNet(input,cfg.num_filters,cfg.kernel_size,cfg.dilations,cfg.ratio,cfg.depth,cfg.stage_num,cfg.frame)
